@@ -1,0 +1,30 @@
+﻿node_modules/
+.next/
+.expo/
+dist/
+build/
+coverage/
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Firebase and service-account credentials
+serviceAccountKey.json
+service-account*.json
+*firebase-adminsdk*.json
+google-services.json
+GoogleService-Info.plist
+
+# Private keys and signing files
+*.pem
+*.key
+*.jks
+*.keystore
+
+# Logs and TypeScript build info
+firebase-debug.log
+firestore-debug.log
+*.tsbuildinfo

@@ -1,0 +1,54 @@
+{
+  "expo": {
+    "name": "ResolveX",
+    "slug": "resolvex",
+    "scheme": "resolvex",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "plugins": [
+      "expo-router",
+      "expo-notifications",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow ResolveX to access your camera to capture photographic proof for complaints and scan visitor QR passes."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow ResolveX to access your photo library to attach issue evidence and documents."
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Allow ResolveX to access your device location to accurately tag common-area issues and society amenities."
+        }
+      ]
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.resolvex.community",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Allow ResolveX to access your camera to capture photographic proof for complaints and scan visitor QR passes.",
+        "NSPhotoLibraryUsageDescription": "Allow ResolveX to access your photo library to attach issue evidence and documents.",
+        "NSLocationWhenInUseUsageDescription": "Allow ResolveX to access your device location to accurately tag common-area issues and society amenities."
+      }
+    },
+    "android": {
+      "package": "com.resolvex.community",
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.POST_NOTIFICATIONS"
+      ],
+      "adaptiveIcon": {
+        "backgroundColor": "#4338ca"
+      }
+    }
+  }
+}

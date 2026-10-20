@@ -1,0 +1,31 @@
+{
+  "name": "resolvex",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ResolveX - Smart Society & Community Management Platform",
+  "workspaces": [
+    "apps/*",
+    "packages/*",
+    "firebase/functions"
+  ],
+  "scripts": {
+    "dev:web": "npm run dev -w apps/web",
+    "build:web": "npm run build -w apps/web",
+    "lint:web": "npm --workspace=@resolvex/web run lint",
+    "typecheck": "npm run typecheck -w packages/types && npm run typecheck -w packages/utils && npm run typecheck -w packages/ui && npm run typecheck -w apps/web && npm run typecheck -w apps/mobile && npm run typecheck -w firebase/functions",
+    "dev:mobile": "npm run start -w apps/mobile",
+    "seed:preview": "npm run seed:preview -w packages/utils"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.7",
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3"
+  },
+  "dependencies": {
+    "expo-modules-core": "~57.0.20"
+  }
+}

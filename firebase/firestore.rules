@@ -1,0 +1,402 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function userDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function userProfile() {
+      return userDoc().data;
+    }
+
+    function hasRole(role) {
+      return signedIn() && (
+        (userProfile().role == role) ||
+        ("platformRoles" in userProfile() && role in userProfile().platformRoles)
+      );
+    }
+
+    function isSuperAdmin() {
+      return hasRole("super_admin");
+    }
+
+    function sameSociety(societyId) {
+      return signedIn() && (userProfile().societyId == societyId || isSuperAdmin());
+    }
+
+    function canManageSociety(societyId) {
+      return sameSociety(societyId) && (
+        hasRole("society_admin") ||
+        hasRole("society_manager") ||
+        hasRole("society_management") ||
+        isSuperAdmin()
+      );
+    }
+
+    function sameHousehold(householdId) {
+      return signedIn() && (userProfile().householdId == householdId || isSuperAdmin());
+    }
+
+    // ─── USERS ─────────────────────────────────────────────────────────────
+    match /users/{userId} {
+      allow read: if signedIn() && (
+        request.auth.uid == userId ||
+        sameSociety(resource.data.societyId) ||
+        isSuperAdmin()
+      );
+      allow create: if signedIn() && (
+        isSuperAdmin() ||
+        (request.auth.uid == userId && request.auth.token.email in ["admin@resolvex.com", "admin.ajanta@resolvex.com", "admin.grandarch@resolvex.com"]) ||
+        (canManageSociety(request.resource.data.societyId) &&
+         request.resource.data.role in ["maintenance_staff", "security_guard"] &&
+         (!("isSocietyAdmin" in request.resource.data) || request.resource.data.isSocietyAdmin == false)) ||
+        (request.auth.uid == userId &&
+         request.resource.data.role in ["resident", "flat_owner", "tenant", "maintenance_staff", "security_guard"] &&
+         (!("platformRoles" in request.resource.data) ||
+          request.resource.data.platformRoles.hasOnly(["resident", "flat_owner", "tenant", "maintenance_staff", "security_guard"])) &&
+         (!("isSocietyAdmin" in request.resource.data) || request.resource.data.isSocietyAdmin == false) &&
+         request.resource.data.status in ["pending", "pending_verification"])
+      );
+      allow update: if signedIn() && (
+        (request.auth.uid == userId && request.auth.token.email in ["admin@resolvex.com", "admin.ajanta@resolvex.com", "admin.grandarch@resolvex.com"]) ||
+        (request.auth.uid == userId && (!request.resource.data.diff(resource.data).affectedKeys().hasAny([
+          "role", "platformRoles", "societyId", "householdId", "flatId", "isSocietyAdmin", "status"
+        ]))) ||
+        canManageSociety(resource.data.societyId) ||
+        isSuperAdmin()
+      );
+      allow delete: if isSuperAdmin();
+    }
+
+    // ─── HIERARCHY: SOCIETIES, TOWERS, FLATS, HOUSEHOLDS ───────────────────
+    match /societies/{societyId} {
+      allow read: if signedIn();
+      allow write: if canManageSociety(societyId) || isSuperAdmin();
+    }
+
+    match /towers/{towerId} {
+      allow read: if sameSociety(resource.data.societyId) || isSuperAdmin();
+      allow create: if canManageSociety(request.resource.data.societyId) || isSuperAdmin();
+      allow update, delete: if canManageSociety(resource.data.societyId) || isSuperAdmin();
+    }
+
+    match /flats/{flatId} {
+      allow read: if sameSociety(resource.data.societyId) || isSuperAdmin();
+      allow create: if canManageSociety(request.resource.data.societyId) || isSuperAdmin();
+      allow update, delete: if canManageSociety(resource.data.societyId) || isSuperAdmin();
+    }
+
+    match /households/{householdId} {
+      allow read: if sameHousehold(householdId) || sameSociety(resource.data.societyId) || isSuperAdmin();
+      allow create: if signedIn() && sameSociety(request.resource.data.societyId);
+      allow update: if canManageSociety(resource.data.societyId) ||
+        (sameHousehold(householdId) && userProfile().householdRole in ["owner", "co_owner"]) ||
+        (signedIn() && sameSociety(resource.data.societyId) &&
+         request.resource.data.diff(resource.data).affectedKeys().hasOnly(["pendingRequestIds", "updatedAt"]));
+      allow delete: if canManageSociety(resource.data.societyId) || isSuperAdmin();
+    }
+
+    // ─── COMPLAINTS & WORKFLOW ─────────────────────────────────────────────
+    match /complaints/{complaintId} {
+      allow read: if sameHousehold(resource.data.householdId) ||
+        request.auth.uid == resource.data.reportedBy ||
+        request.auth.uid == resource.data.createdByUserId ||
+        (sameSociety(resource.data.societyId) && resource.data.locationType == "common_area") ||
+        canManageSociety(resource.data.societyId) ||
+        (hasRole("maintenance_staff") && sameSociety(resource.data.societyId) && (resource.data.assignedStaffId == request.auth.uid || resource.data.assignedStaffId == null)) ||
+        isSuperAdmin();
+      allow create: if signedIn() &&
+        sameSociety(request.resource.data.societyId) &&
+        (sameHousehold(request.resource.data.householdId) ||
+         request.auth.uid == request.resource.data.reportedBy ||
+         request.auth.uid == request.resource.data.createdByUserId);
+      allow update: if canManageSociety(resource.data.societyId) ||
+        ((sameHousehold(resource.data.householdId) || request.auth.uid == resource.data.reportedBy || request.auth.uid == resource.data.createdByUserId) &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            "status", "confirmedByResident", "residentConfirmedAt", "resolvedAt", "closedAt", "reopenReason", "reopenedAt", "rating", "updatedAt"
+          ]) &&
+          request.resource.data.status in ["resolved", "closed", "reopened"] &&
+          (request.resource.data.status != "reopened" || (request.resource.data.reopenReason is string && request.resource.data.reopenReason.size() > 0))
+        ) ||
+        (hasRole("maintenance_staff") &&
+          sameSociety(resource.data.societyId) &&
+          resource.data.assignedStaffId == request.auth.uid &&
+          (!request.resource.data.diff(resource.data).affectedKeys().hasAny([
+            "householdId", "societyId", "reportedBy", "createdByUserId", "assignedStaffId",
+            "slaDeadline", "slaDueAt", "priority", "category", "title", "description",
+            "location", "locationSource", "locationType", "assetId", "createdAt",
+            "confirmedByResident", "residentConfirmedAt", "closedAt", "resolvedAt",
+            "reopenReason", "reopenedAt"
+          ])) &&
+          request.resource.data.status in ["in_progress", "resident_confirmation"]
+        );
+      allow delete: if canManageSociety(resource.data.societyId) || isSuperAdmin();
+    }
+
+    match /complaint_updates/{updateId} {
+      allow read: if signedIn();
+      allow create: if signedIn();
+      allow update, delete: if false; // Lifecycle history is immutable
+    }
+
+    // ─── FACILITIES & ASSET SERVICE LOGS ────────────────────────────────────
+    match /facilities/{facilityId} {
+      allow read: if sameSociety(resource.data.societyId) || isSuperAdmin();
+      allow create: if canManageSociety(request.resource.data.societyId) ||
+        hasRole("maintenance_staff") ||
+        isSuperAdmin();
+      allow update, delete: if canManageSociety(resource.data.societyId) ||
+        hasRole("maintenance_staff") ||
+        isSuperAdmin();
+
+      match /serviceLogs/{logId} {
+        allow read: if signedIn();
+        allow create: if signedIn() && (hasRole("maintenance_staff") || canManageSociety(get(/databases/$(database)/documents/facilities/$(facilityId)).data.societyId));
+        allow update, delete: if canManageSociety(get(/databases/$(database)/documents/facilities/$(facilityId)).data.societyId);
+      }
+    }
+
+    match /facility_service_logs/{logId} {
+      allow read: if sameSociety(resource.data.societyId) || isSuperAdmin();
+      allow create: if signedIn() && (
+        hasRole("maintenance_staff") ||
+        canManageSociety(request.resource.data.societyId)
+      );
+      allow update, delete: if isSuperAdmin();
+    }
+
+    // ─── VISITORS, PASSES & DELIVERIES ──────────────────────────────────────
+    match /visitor_passes/{passId} {
+      allow read: if signedIn() && (
+        sameHousehold(resource.data.householdId) ||
+        (hasRole("security_guard") && sameSociety(resource.data.societyId)) ||
+        canManageSociety(resource.data.societyId) ||
+        isSuperAdmin()
+      );
+      allow create: if signedIn() && (
+        sameHousehold(request.resource.data.householdId) ||
+        (hasRole("security_guard") && sameSociety(request.resource.data.societyId)) ||
+        canManageSociety(request.resource.data.societyId)
+      );
+      allow update: if signedIn() && (
+        (hasRole("security_guard") && sameSociety(resource.data.societyId)) ||
+        sameHousehold(resource.data.householdId) ||
+        canManageSociety(resource.data.societyId) ||
+        isSuperAdmin()
+      );
+      allow delete: if canManageSociety(resource.data.societyId) || sameHousehold(resource.data.householdId);
+    }
+
+    match /visitors/{visitorId} {
+      allow read: if signedIn() && (
+        sameHousehold(resource.data.householdId) ||
+        (hasRole("security_guard") && sameSociety(resource.data.societyId)) ||
+        canManageSociety(resource.data.societyId) ||
+        isSuperAdmin()
+      );
+      allow create: if signedIn() && (
+        sameHousehold(request.resource.data.householdId) ||
+        (hasRole("security_guard") && sameSociety(request.resource.data.societyId)) ||
+        canManageSociety(request.resource.data.societyId)
+      );
+      allow update: if signedIn() && (
+        (hasRole("security_guard") && sameSociety(resource.data.societyId)) ||
+        sameHousehold(resource.data.householdId) ||
+        canManageSociety(resource.data.societyId)
+      );
+      allow delete: if canManageSociety(resource.data.societyId) || isSuperAdmin();
+    }
+
+    match /deliveries/{deliveryId} {
+      allow read: if signedIn() && (
+        sameHousehold(resource.data.householdId) ||
+        (hasRole("security_guard") && sameSociety(resource.data.societyId)) ||
+        canManageSociety(resource.data.societyId) ||
+        isSuperAdmin()
+      );
+      allow create: if signedIn() && (
+        (hasRole("security_guard") && sameSociety(request.resource.data.societyId)) ||
+        canManageSociety(request.resource.data.societyId) ||
+        sameHousehold(request.resource.data.householdId)
+      );
+      allow update: if signedIn() && (
+        (hasRole("security_guard") && sameSociety(resource.data.societyId)) ||
+        canManageSociety(resource.data.societyId) ||
+        sameHousehold(resource.data.householdId)
+      );
+      allow delete: if canManageSociety(resource.data.societyId) || isSuperAdmin();
+    }
+
+    // ─── NOTICES ───────────────────────────────────────────────────────────
+    match /notices/{noticeId} {
+      allow read: if sameSociety(resource.data.societyId) || isSuperAdmin();
+      allow create: if canManageSociety(request.resource.data.societyId) || isSuperAdmin();
+      allow update, delete: if canManageSociety(resource.data.societyId) || isSuperAdmin();
+    }
+
+    // ─── BILLING & DUES ────────────────────────────────────────────────────
+    match /bills/{billId} {
+      allow read: if signedIn() && (
+        sameHousehold(resource.data.householdId) ||
+        canManageSociety(resource.data.societyId) ||
+        isSuperAdmin()
+      );
+      allow create: if canManageSociety(request.resource.data.societyId) || isSuperAdmin();
+      allow update, delete: if canManageSociety(resource.data.societyId) || isSuperAdmin();
+    }
+
+    match /receipts/{receiptId} {
+      allow read: if signedIn() && (
+        sameHousehold(resource.data.householdId) ||
+        canManageSociety(resource.data.societyId) ||
+        isSuperAdmin()
+      );
+      allow create: if signedIn() &&
+        sameHousehold(request.resource.data.householdId) &&
+        sameSociety(request.resource.data.societyId);
+      allow update, delete: if false; // Receipts are immutable
+    }
+
+    // ─── AMENITIES & BOOKINGS ──────────────────────────────────────────────
+    match /amenities/{amenityId} {
+      allow read: if signedIn();
+      allow create: if canManageSociety(request.resource.data.societyId) || isSuperAdmin();
+      allow update, delete: if canManageSociety(resource.data.societyId) || isSuperAdmin();
+    }
+
+    match /amenity_bookings/{bookingId} {
+      allow read: if sameSociety(resource.data.societyId) || isSuperAdmin();
+      allow create: if signedIn() &&
+        sameSociety(request.resource.data.societyId) &&
+        (request.resource.data.userId == request.auth.uid || canManageSociety(request.resource.data.societyId) || isSuperAdmin()) &&
+        request.resource.data.guestCount is int &&
+        request.resource.data.guestCount >= 0 &&
+        (!exists(/databases/$(database)/documents/amenities/$(request.resource.data.amenityId)) ||
+         request.resource.data.guestCount <= get(/databases/$(database)/documents/amenities/$(request.resource.data.amenityId)).data.capacity);
+      allow update: if canManageSociety(resource.data.societyId) ||
+        ((sameHousehold(resource.data.householdId) || resource.data.userId == request.auth.uid) &&
+         request.resource.data.diff(resource.data).affectedKeys().hasOnly(["status", "updatedAt"]) &&
+         request.resource.data.status == "cancelled");
+      allow delete: if canManageSociety(resource.data.societyId) || isSuperAdmin();
+    }
+
+    match /amenity_slot_locks/{lockId} {
+      allow read: if signedIn();
+      allow create: if signedIn() &&
+        request.auth.uid == request.resource.data.userId &&
+        sameSociety(request.resource.data.societyId);
+      allow update: if signedIn() && (
+        canManageSociety(resource.data.societyId) ||
+        (request.auth.uid == resource.data.userId &&
+         request.resource.data.diff(resource.data).affectedKeys().hasOnly(["status", "cancelledAt", "updatedAt"]) &&
+         request.resource.data.status == "cancelled") ||
+        (resource.data.status == "cancelled" &&
+         request.resource.data.status == "confirmed" &&
+         request.auth.uid == request.resource.data.userId &&
+         sameSociety(request.resource.data.societyId))
+      );
+      allow delete: if canManageSociety(resource.data.societyId) || isSuperAdmin();
+    }
+
+    match /service_bookings/{bookingId} {
+      allow read: if signedIn() && (
+        sameSociety(resource.data.societyId) ||
+        isSuperAdmin()
+      );
+      allow create: if signedIn() &&
+        sameSociety(request.resource.data.societyId) &&
+        request.resource.data.userId == request.auth.uid;
+      allow update: if signedIn() && (
+        canManageSociety(resource.data.societyId) ||
+        ((resource.data.userId == request.auth.uid || sameHousehold(resource.data.householdId)) &&
+         request.resource.data.diff(resource.data).affectedKeys().hasOnly(["status", "updatedAt"]) &&
+         request.resource.data.status == "cancelled")
+      );
+      allow delete: if canManageSociety(resource.data.societyId) || isSuperAdmin();
+    }
+
+    // ─── COMMUNITY: POSTS, COMMENTS, POLLS, VOTES, MARKETPLACE ─────────────
+    match /community_posts/{postId} {
+      allow read: if sameSociety(resource.data.societyId) || isSuperAdmin();
+      allow create: if signedIn() && sameSociety(request.resource.data.societyId);
+      allow update, delete: if signedIn() && (
+        request.auth.uid == resource.data.authorUserId ||
+        canManageSociety(resource.data.societyId)
+      );
+    }
+
+    match /community_comments/{commentId} {
+      allow read: if sameSociety(resource.data.societyId) || isSuperAdmin();
+      allow create: if signedIn() && sameSociety(request.resource.data.societyId);
+      allow update, delete: if signedIn() && (
+        request.auth.uid == resource.data.authorUserId ||
+        canManageSociety(resource.data.societyId)
+      );
+    }
+
+    match /community_polls/{pollId} {
+      allow read: if sameSociety(resource.data.societyId) || isSuperAdmin();
+      allow create: if signedIn() && sameSociety(request.resource.data.societyId);
+      allow update: if signedIn() && sameSociety(resource.data.societyId);
+      allow delete: if canManageSociety(resource.data.societyId) || isSuperAdmin();
+    }
+
+    match /poll_votes/{voteId} {
+      allow read: if sameSociety(resource.data.societyId) || isSuperAdmin();
+      allow create: if signedIn() &&
+        request.auth.uid == request.resource.data.userId &&
+        sameSociety(request.resource.data.societyId) &&
+        voteId == request.resource.data.pollId + '_' + request.auth.uid;
+      allow update, delete: if false; // Poll votes are immutable
+    }
+
+    match /marketplace_items/{itemId} {
+      allow read: if sameSociety(resource.data.societyId) || isSuperAdmin();
+      allow create: if signedIn() && sameSociety(request.resource.data.societyId);
+      allow update, delete: if signedIn() && (
+        request.auth.uid == resource.data.sellerUserId ||
+        canManageSociety(resource.data.societyId)
+      );
+    }
+
+    match /lost_found_items/{itemId} {
+      allow read: if sameSociety(resource.data.societyId) || isSuperAdmin();
+      allow create: if signedIn() && sameSociety(request.resource.data.societyId);
+      allow update: if signedIn() && sameSociety(resource.data.societyId);
+      allow delete: if canManageSociety(resource.data.societyId) || isSuperAdmin();
+    }
+
+    match /society_events/{eventId} {
+      allow read: if sameSociety(resource.data.societyId) || isSuperAdmin();
+      allow create: if canManageSociety(request.resource.data.societyId) || isSuperAdmin();
+      allow delete: if canManageSociety(resource.data.societyId) || isSuperAdmin();
+      allow update: if canManageSociety(resource.data.societyId) ||
+        (signedIn() && sameSociety(resource.data.societyId) &&
+         request.resource.data.diff(resource.data).affectedKeys().hasOnly(["attendeeUserIds"]));
+    }
+
+    // ─── NOTIFICATIONS & AUDIT LOGS ────────────────────────────────────────
+    match /notifications/{notificationId} {
+      allow read, update: if signedIn() && (
+        request.auth.uid == resource.data.userId ||
+        request.auth.uid == resource.data.recipientUserId
+      );
+      allow create: if signedIn();
+      allow delete: if signedIn() && (
+        request.auth.uid == resource.data.userId ||
+        request.auth.uid == resource.data.recipientUserId
+      );
+    }
+
+    match /audit_logs/{logId} {
+      allow read: if canManageSociety(resource.data.societyId) || isSuperAdmin();
+      allow create: if signedIn();
+      allow update, delete: if false; // Audit logs are strictly immutable
+    }
+  }
+}

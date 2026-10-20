@@ -1,0 +1,19 @@
+{
+  "name": "@resolvex/utils",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "seed:preview": "node scripts/print-seed.mjs"
+  },
+  "dependencies": {
+    "@resolvex/types": "0.1.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.0"
+  }
+}
